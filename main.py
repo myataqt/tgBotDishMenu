@@ -1,43 +1,93 @@
 import asyncio
 import logging
+import json
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters.command import Command
-from aiogram import F
 from config_reader import config
+from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import State, StatesGroup
 
-#Логирование
+# Логирование
 logging.basicConfig(level=logging.INFO)
-#Бот
+
+# Бот и его ключ полученный из get_secret_value
 bot = Bot(token=config.bot_token.get_secret_value())
-#Диспетчер
-dp = Dispatcher()
+
+# Диспетчер
+dp = Dispatcher(storage=MemoryStorage())
+
+# Имя файла для хранения данных
+DATA_FILE = 'dishes.json'
+
+# Функция для загрузки данных из файла
+def load_dishes():
+    try:
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError:
+        return []
+
+# Функция для сохранения данных в файл
+def save_dishes(dishes):
+    with open(DATA_FILE, 'w') as f:
+        json.dump(dishes, f)
+
+# Загрузка данных при запуске
+dishes = load_dishes()
+
+class DishForm(StatesGroup):
+    waiting_for_dish_name = State()
+    waiting_for_delete_index = State()
 
 # Хэндлер на команду /start
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    kb = [
-        [types.KeyboardButton(text="Добавить блюдо")],
-        [types.KeyboardButton(text="Удалить блюдо")],
-        [types.KeyboardButton(text="Посмотреть список всех блюд")]
-    ]
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=kb,
-        resize_keyboard=True,
-        input_field_placeholder="Выберите желаемое действие"
-    )
-    await message.answer("Привет, я бот для составления домашнего меню. Для удобства пользования используйте кнопки ниже!", reply_markup=keyboard)
+async def send_welcome(message: types.Message):
+    await message.reply("Привет! Я бот для хранения названий блюд. Введите /add для добавления нового блюда, /list для отображения всех блюд и /delete для удаления блюда по порядковому номеру.")
 
-@dp.message(F.text.lower() == "добавить блюдо")
-async def new_dish(message: types.Message):
-    await message.reply("Укажите название блюда для добавления!")
+@dp.message(Command("add"))
+async def add_dish(message: types.Message, state: FSMContext):
+    await message.reply("Введите название блюда:")
+    await state.set_state(DishForm.waiting_for_dish_name)
 
-@dp.message(F.text.lower() == "удалить блюдо")
-async def delete_dish(message: types.Message):
-    await message.reply("Укажите название блюда для удаления!")
+@dp.message(Command("list"))
+async def list_dishes(message: types.Message):
+    if not dishes:
+        await message.reply("Список блюд пуст.")
+    else:
+        await message.reply("Список блюд:\n" + "\n".join(f"{idx + 1}. {dish}" for idx, dish in enumerate(dishes)))
 
-@dp.message(F.text.lower() == "посмотреть список всех блюд")
-async def list_dish(message: types.Message):
-    await message.reply("А БИЛЯ Я ЕЩЕ НИЧЕГО НЕ СДЕЛАЛЬ")
+@dp.message(Command("delete"))
+async def delete_dish(message: types.Message, state: FSMContext):
+    if not dishes:
+        await message.reply("Список блюд пуст, удалять нечего.")
+    else:
+        await message.reply("Введите номер блюда, которое хотите удалить:")
+        await state.set_state(DishForm.waiting_for_delete_index)
+
+@dp.message(DishForm.waiting_for_dish_name)
+async def handle_dish_name(message: types.Message, state: FSMContext):
+    dishes.append(message.text)
+    save_dishes(dishes)
+    await message.reply("Блюдо добавлено!")
+    await state.clear()
+
+@dp.message(DishForm.waiting_for_delete_index)
+async def handle_delete_index(message: types.Message, state: FSMContext):
+    try:
+        index = int(message.text) - 1
+        if 0 <= index < len(dishes):
+            deleted_dish = dishes.pop(index)
+            save_dishes(dishes)
+            await message.reply(f"Блюдо '{deleted_dish}' удалено!")
+        else:
+            await message.reply("Неверный номер блюда. Попробуйте еще раз.")
+    except ValueError:
+        await message.reply("Пожалуйста, введите корректный номер.")
+    await state.clear()
 
 # Запуск процесса поллинга новых апдейтов
 async def main():
